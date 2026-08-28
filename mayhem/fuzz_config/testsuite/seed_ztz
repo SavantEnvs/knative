@@ -1,0 +1,2 @@
+scale-to-zero-grace-period=45s
+enable-scale-to-zero=true

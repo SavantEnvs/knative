@@ -1,0 +1,70 @@
+// mayhem/harness_config.go.src — native testing.F harness for Knative Serving's
+// autoscaler CONFIG parser (pkg/autoscaler/config.NewConfigFromMap), the fuzz
+// surface. Staged by mayhem/build.sh into a fresh single-package directory
+// (_mayhem_harness/cfg) under a LEADING-UNDERSCORE path so `go build/test ./...`
+// wildcards skip it (it imports "testing" from a non-test file, which
+// go-118-fuzz-build rewrites into an ordinary .go file).
+//
+// NewConfigFromMap is EXPORTED, so — unlike the openkruise calculator port — the
+// harness does not need to live inside the parser's package; it imports it by
+// module path. That keeps the k8s reconciler closure out entirely: this pulls
+// only the leaf config package (knative.dev/pkg/configmap string coercion +
+// k8s.io/apimachinery duration/quantity parsing), NOT a reconciler.
+//
+// Byte-in, NO file I/O (netnew §3): the fuzzer's bytes are split into
+// newline-separated `key=value` config entries and handed straight to
+// NewConfigFromMap(), which runs the real float/int/duration/percentage
+// coercion + range validation. It must never panic on any input.
+package cfgfuzz
+
+import (
+	"strings"
+	"testing"
+
+	asconfig "knative.dev/serving/pkg/autoscaler/config"
+)
+
+// FuzzParse drives NewConfigFromMap — the config-map string parser that coerces
+// autoscaler knobs (floats, int32s, durations, percentages) into a typed Config
+// and validates their ranges. Errors are expected; panics are bugs.
+func FuzzParse(f *testing.F) {
+	seeds := []string{
+		"max-scale-up-rate=3.5",
+		"max-scale-down-rate=2.5",
+		"stable-window=70s",
+		"scale-down-delay=30s",
+		"scale-to-zero-grace-period=45s",
+		"scale-to-zero-pod-retention-period=1m",
+		"container-concurrency-target-percentage=50",
+		"container-concurrency-target-default=100",
+		"requests-per-second-target-default=200",
+		"target-burst-capacity=-1",
+		"panic-window-percentage=10",
+		"panic-threshold-percentage=200",
+		"activator-capacity=100",
+		"pod-autoscaler-class=custom.knative.dev",
+		"enable-scale-to-zero=true",
+		"allow-zero-initial-scale=true\ninitial-scale=0",
+		"min-scale=2\nmax-scale=5",
+		"max-scale-limit=10\nmax-scale=3",
+		"max-scale-up-rate=1e3",
+		"stable-window=6s\npanic-window-percentage=1",
+		"", "\n", "=", "a=b", "max-scale-up-rate=", "stable-window=notaduration",
+	}
+	for _, seed := range seeds {
+		f.Add([]byte(seed))
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		m := make(map[string]string)
+		for _, line := range strings.Split(string(data), "\n") {
+			k, v, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			m[k] = v
+		}
+		// Parse + validate; errors are expected, panics are defects.
+		_, _ = asconfig.NewConfigFromMap(m)
+	})
+}
